@@ -1,0 +1,128 @@
+
+찾지못한내용 또는 이해하지못한내용은 첨부되어있는 분석을 참고(질문사항) (*)
+
+#include <px4_config.h>
+#include <px4_tasks.h>
+#include <px4_posix.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <poll.h>
+#include <string.h>
+#include <math.h>
+
+#include <uORB/uORB.h>
+#include <uORB/topics/sensor_combined.h>
+#include <uORB/topics/vehicle_attitude.h>
+
+==> 본 코드에 사용되는 헤더
+
+__EXPORT int px4_simple_app_main(int argc, char *argv[]);
+
+int px4_simple_app_main(int argc, char *argv[])
+{
+	PX4_INFO("Hello Sky!");
+
+	/* subscribe to sensor_combined topic */
+	int sensor_sub_fd = orb_subscribe(ORB_ID(sensor_combined));
+
+==> sensor_combined을 연다
+
+	/* limit the update rate to 5 Hz */
+	orb_set_interval(sensor_sub_fd, 200);
+
+==> sensor_combined속 무언가의 수치를 200으로 변경(*sensor_combined 파일의 ORBIOCSETINTERVAL의 속성을 200ms으로 바꾼다.)
+
+	/* advertise attitude topic */
+	struct vehicle_attitude_s att;
+
+==> vehicle_attitude_s att라는 구조체를 선언
+
+	memset(&att, 0, sizeof(att));
+
+==> att 채우고자하는 메모리의 시작 주소, 0 메모리에 채우고자 하는 값, att의 데이터크기만큼 메모리를 채운다
+
+	orb_advert_t att_pub = orb_advertise(ORB_ID(vehicle_attitude), &att);
+
+==> (*orb_advertise: vehicle_attitude 토픽을 발행(publish)하기 위한 초기화)
+
+	/* one could wait for multiple topics with this technique, just using one here */
+	px4_pollfd_struct_t fds[] = {
+		{ .fd = sensor_sub_fd,   .events = POLLIN },
+		/* there could be more file descriptors here, in the form like:
+		 * { .fd = other_sub_fd,   .events = POLLIN },
+		 */
+	};
+
+==> (*poll 구조체에 sensor_sub_fd 파일 디스크립터와 POLLIN(입력) 이벤트를 정의. 이후 poll 함수 쓸 때 사용)
+
+	int error_counter = 0;
+
+	for (int i = 0; i < 5; i++) {
+		/* wait for sensor update of 1 file descriptor for 1000 ms (1 second) */
+		int poll_ret = px4_poll(fds, 1, 1000);
+
+==> fds에 있는 파일에 하나의 uORB주제가 성공적으로 성정되었는지 확인
+
+		/* handle the poll result */
+		if (poll_ret == 0) {
+			/* this means none of our providers is giving us data */
+			PX4_ERR("Got no data within a second");
+
+==> poll_ret이 0이면 Got no data within a second라는 메세지를 출력. 이는 uORB메세지를 가져올 수 없음을 의미
+(타임아웃)
+
+		} else if (poll_ret < 0) {
+			/* this is seriously bad - should be an emergency */
+			if (error_counter < 10 || error_counter % 50 == 0) {
+				/* use a counter to prevent flooding (and slowing us down) */
+				PX4_ERR("ERROR return value from poll(): %d", poll_ret);
+			}
+
+			error_counter++;
+
+==> poll_ret이 0보다 작으면 에러가 발생했음을 알려줌
+
+		} else {
+
+			if (fds[0].revents & POLLIN) {
+				/* obtained data for the first file descriptor */
+				struct sensor_combined_s raw;
+
+==> sensor_combined_s raw라는 구조체를 선
+
+				/* copy sensors raw data into local buffer */
+				orb_copy(ORB_ID(sensor_combined), sensor_sub_fd, &raw);
+				PX4_INFO("Accelerometer:\t%8.4f\t%8.4f\t%8.4f",
+					 (double)raw.accelerometer_m_s2[0],
+					 (double)raw.accelerometer_m_s2[1],
+					 (double)raw.accelerometer_m_s2[2]);
+
+==>(*sensor_sub_fd 로 부터 sensor_combined 토픽을 읽어, raw에 저장.)
+
+				/* set att and publish this information for other apps
+				 the following does not have any meaning, it's just an example
+				*/
+				att.q[0] = raw.accelerometer_m_s2[0];
+				att.q[1] = raw.accelerometer_m_s2[1];
+				att.q[2] = raw.accelerometer_m_s2[2];
+
+				orb_publish(ORB_ID(vehicle_attitude), att_pub, &att);
+
+==> (*vehicle_attitude)에 가속도 평균값을 publish
+
+			}
+
+			/* there could be more file descriptors here, in the form like:
+			 * if (fds[1..n].revents & POLLIN) {}
+			 */
+		}
+	}
+
+==> 이를 5번 반복한다.
+
+	PX4_INFO("exiting");
+
+==> 끝으로 exiting이라는 메세지를 출
+
+	return 0;
+}
